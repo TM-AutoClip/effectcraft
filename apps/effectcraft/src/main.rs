@@ -24,6 +24,7 @@ mod audio_out;
 mod control_server;
 mod crash_report;
 mod diagnostic_state;
+mod tm_kanal;
 mod launch_guard;
 #[cfg(target_os = "macos")]
 mod native_menu;
