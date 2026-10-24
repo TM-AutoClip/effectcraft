@@ -1,0 +1,180 @@
+# TM AutoClip fork derlemesi: yalnız Windows x64, imzasız. Release açmaz, çıktı artifact olarak kalır.
+#
+# Upstream'in Windows x64 taşınabilir zip yolunun (release.yml -> craft-common-actions release.yml ->
+# packaging/windows/package.ps1) sade kopyası. Aynı kalanlar: +crt-static (VC++ paketi gerekmez),
+# CRAFT_FONTS_DIR + CRAFT_FONTS_REQUIRED (craft-fonts pin'i upstream release.yml'deki değer), PE başlık
+# denetimi, zip'te README/LICENSE/NOTICE/ATTRIBUTION ve OFL dosyaları.
+# Olmayanlar: MSI/WiX, imzalama, x86/arm64, upstream betikleri (package.ps1, sign.ps1 çalıştırılmaz).
+# Üçüncü taraf action'lar commit SHA'sıyla sabit (upstream'in kullandığı SHA'lar, etiketleri doğrulandı).
+name: TM derle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["tm/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tm-derle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP: effectcraft
+  # cargo --features değeri (boş: yok). Upstream package.ps1 ile aynı.
+  CARGO_FEATURES: ""
+  # storytold/craft-fonts commit'i (boş: bu program yazı tipi gömmüyor). Upstream release.yml ile aynı.
+  CRAFT_FONTS_REF: ""
+  TARGET: x86_64-pc-windows-msvc
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: craft-fonts
+        if: env.CRAFT_FONTS_REF != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: tm-windows-x64
+
+      - name: Derle
+        shell: pwsh
+        env:
+          # Statik C çalışma zamanı; yalnız hedefe uygulanır (build betikleri ve proc-macro'lar etkilenmez).
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $onek = $env:APP.ToUpperInvariant()
+          Set-Item "env:${onek}_REQUIRE_WINRES" '1'
+          Set-Item "env:${onek}_BUILD_SHA" $env:GITHUB_SHA
+          Set-Item "env:${onek}_BUILD_DATE" ((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd'))
+          if ($env:CRAFT_FONTS_REF) {
+            $env:CRAFT_FONTS_DIR = Join-Path $env:GITHUB_WORKSPACE 'craft-fonts'
+            $env:CRAFT_FONTS_REQUIRED = '1'
+            if (-not (Test-Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts/manifest.txt'))) { throw 'craft-fonts eksik (fonts/manifest.txt yok)' }
+            "CRAFT_FONTS_DIR=$($env:CRAFT_FONTS_DIR)" >> $env:GITHUB_ENV
+          }
+          $ozellik = @()
+          if ($env:CARGO_FEATURES) { $ozellik = @('--features', $env:CARGO_FEATURES) }
+          cargo build --release --locked -p $env:APP -p "$($env:APP)-cli" @ozellik --target $env:TARGET
+          if ($LASTEXITCODE -ne 0) { throw "cargo build çıkış $LASTEXITCODE" }
+
+      - name: Paketle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kok = $env:GITHUB_WORKSPACE
+          $bin = Join-Path $kok "target/$($env:TARGET)/release"
+
+          # Sürüm tek yerde: kök Cargo.toml [workspace.package] version.
+          $surum = $null; $bolum = $false
+          foreach ($satir in Get-Content (Join-Path $kok 'Cargo.toml')) {
+            if ($satir -match '^\s*\[') { $bolum = ($satir.Trim() -eq '[workspace.package]'); continue }
+            if ($bolum -and $satir -match '^\s*version\s*=\s*"([^"]+)"') { $surum = $Matches[1]; break }
+          }
+          if (-not $surum) { throw 'Cargo.toml [workspace.package] version okunamadı' }
+
+          # PE denetimi (upstream package.ps1 gibi): x64 olmalı; uygulama GUI (2), cli konsol (3).
+          # +crt-static denetimi: VC++ çalışma zamanı DLL'i içe aktarılmamalı.
+          foreach ($d in @(@("$($env:APP).exe", 2), @("$($env:APP)-cli.exe", 3))) {
+            $b = [IO.File]::ReadAllBytes((Join-Path $bin $d[0]))
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            $makine = [BitConverter]::ToUInt16($b, $pe + 4)
+            $alt = [BitConverter]::ToUInt16($b, $pe + 0x5C)
+            if ($makine -ne 0x8664) { throw "$($d[0]): makine 0x$('{0:X}' -f $makine), x64 değil" }
+            if ($alt -ne $d[1]) { throw "$($d[0]): PE alt sistemi $alt, beklenen $($d[1])" }
+            if ([Text.Encoding]::ASCII.GetString($b) -match '(?i)vcruntime140|msvcp140') { throw "$($d[0]): VC++ çalışma zamanına bağlı (+crt-static uygulanmamış)" }
+            "tamam $($d[0]): x64, alt sistem $alt, statik CRT"
+          }
+
+          $ad = "$($env:APP)-$surum-tm-windows-x64"
+          $cikis = Join-Path $env:RUNNER_TEMP 'tm-cikti'
+          $paket = Join-Path $env:RUNNER_TEMP "paket/$ad"
+          New-Item -ItemType Directory -Force $cikis, $paket | Out-Null
+          Copy-Item (Join-Path $bin "$($env:APP).exe"), (Join-Path $bin "$($env:APP)-cli.exe") $paket
+
+          # Taşınabilir kip işareti: resmî zip'te ne varsa o.
+          $portable = Join-Path $kok 'packaging/windows/portable.txt'
+          if (Test-Path $portable) { Copy-Item $portable $paket }
+          elseif ($env:APP -eq 'filmcraft') {
+            Set-Content -Encoding ascii -Path (Join-Path $paket 'portable.txt') -Value @(
+              'FilmCraft portable: preferences, presets, logs and crash recovery are kept in the data folder',
+              'next to filmcraft.exe. Delete this file to use %APPDATA%\FilmCraft instead.')
+          }
+
+          foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md') {
+            $p = Join-Path $kok $f
+            if (Test-Path $p) { Copy-Item $p $paket }
+          }
+
+          # Gömülü craft-fonts yazı tiplerinin lisansları: OFL-<aile>.txt.
+          if ($env:CRAFT_FONTS_DIR) {
+            Get-ChildItem -Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts/*/OFL.txt') -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName (Join-Path $paket "OFL-$($_.Directory.Name).txt")
+            }
+          }
+
+          # LightCraft ayrıca birleşik FONT-LICENCES.txt verir (upstream font-licences.ps1 ile aynı içerik).
+          if ($env:APP -eq 'lightcraft') {
+            $parca = [Collections.Generic.List[string]]::new()
+            $parca.Add("LightCraft font licences`n")
+            $parca.Add([IO.File]::ReadAllText((Join-Path $kok 'assets/fonts/OFL-Inter.txt')))
+            if ($env:CRAFT_FONTS_DIR) {
+              $lisanslar = Get-Content -LiteralPath (Join-Path $env:CRAFT_FONTS_DIR 'fonts/manifest.txt') | ForEach-Object {
+                if ($_.Trim() -and -not $_.Trim().StartsWith('#')) {
+                  $alan = $_ -split '\|'
+                  if ($alan.Count -lt 6) { throw "Bozuk yazı tipi manifest satırı: $_" }
+                  $alan[5].Trim()
+                }
+              } | Sort-Object -Unique
+              foreach ($l in $lisanslar) {
+                $parca.Add("`n--- $l ---`n")
+                $parca.Add([IO.File]::ReadAllText((Join-Path $env:CRAFT_FONTS_DIR $l)))
+              }
+            }
+            [IO.File]::WriteAllText((Join-Path $paket 'FONT-LICENCES.txt'), ($parca -join "`n"), [Text.UTF8Encoding]::new($false))
+          }
+
+          # Değiştirilmiş sürüm bildirimi (Apache-2.0 §4b).
+          Set-Content -Encoding utf8 -Path (Join-Path $paket 'TM-YAMA.txt') -Value @(
+            "$($env:APP) v$surum + TM AutoClip yamaları (değiştirilmiş sürüm, imzasız).",
+            "Upstream: https://github.com/storytold/$($env:APP) etiketi v$surum.",
+            "Değiştirilmiş kaynak: https://github.com/$($env:GITHUB_REPOSITORY) dal $($env:GITHUB_REF_NAME), commit $($env:GITHUB_SHA).",
+            "Değişiklikler: o dalda v$surum etiketinden sonraki commit'ler (her yama ayrı commit).",
+            'Lisans: MIT OR Apache-2.0, upstream ile aynı.')
+
+          $zip = Join-Path $cikis "$ad.zip"
+          Compress-Archive -Path $paket -DestinationPath $zip
+          $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          Set-Content -Encoding ascii -Path (Join-Path $cikis 'SHA256SUMS.txt') -Value "$h  $ad.zip"
+          "$ad.zip SHA256 $h"
+          "TM_PAKET=$ad" >> $env:GITHUB_ENV
+          "TM_CIKTI=$cikis" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.TM_PAKET }}
+          path: ${{ env.TM_CIKTI }}/*
+          if-no-files-found: error
