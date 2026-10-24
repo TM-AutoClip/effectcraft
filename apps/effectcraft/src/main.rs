@@ -20,6 +20,7 @@ mod appimage;
 mod apple_events;
 mod audio_out;
 mod control_server;
+mod tm_kanal;
 mod launch_guard;
 #[cfg(target_os = "macos")]
 mod native_menu;
