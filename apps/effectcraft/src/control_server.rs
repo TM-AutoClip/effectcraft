@@ -24,6 +24,9 @@ pub const MAX_CONNECTIONS: usize = 16;
 
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = channel::<ControlRequest>();
+    if !crate::tm_kanal::kanal_acilabilir("effectcraft") {
+        return rx; // TM AutoClip yaması: belirteçsiz kanal açılmaz
+    }
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -56,6 +59,7 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
 
 fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context) {
     let Ok(read) = stream.try_clone() else { return };
+    let Some(read) = crate::tm_kanal::dogrula(read, &mut &stream) else { return }; // TM AutoClip yaması: ilk satır auth
     serve_lines(read, stream, |method, params| {
         let (req, rrx) = ControlRequest::new(method, params);
         tx.send(req).ok()?;
