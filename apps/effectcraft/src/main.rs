@@ -117,6 +117,9 @@ fn parse_args(args: impl IntoIterator<Item = String>, env_port: Result<String, s
     Ok(Some(out))
 }
 
+/// TM AutoClip yamasi: surum TM AutoClip'te sabit; acilista guncelleme denetimi her durumda kapali.
+const TM_ACILIS_GUNCELLEME_DENETIMI: bool = false;
+
 /// Whether the app looks for a newer release when it starts. Not when started for an agent
 /// (`--control`): the "update available" prompt is modal and would block the run until a person
 /// dismisses it. Help ▸ Check for Updates still works.
@@ -376,7 +379,8 @@ fn run_desktop(reporter: &crash_report::Shutdown) -> eframe::Result {
             // reported in a toast and forgotten).
             let _ = session.execute("window.restoreScriptPanels", json!({}));
             let mut app = EffectcraftApp::new(session);
-            app.set_startup_update_check(startup_update_check(control_port));
+            // TM AutoClip yamasi: surum sabit, acilista guncelleme sorulmaz (upstream kurali korunur, ustune kapali).
+            app.set_startup_update_check(TM_ACILIS_GUNCELLEME_DENETIMI && startup_update_check(control_port));
             app.set_gpu_failure_bridge(gpu_failures);
             app.ui.start_screen = show_home;
             if let Some(n) = notice {
