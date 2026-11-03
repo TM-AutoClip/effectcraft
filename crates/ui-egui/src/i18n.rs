@@ -88,13 +88,24 @@ fn system_language() -> &'static str {
     #[cfg(not(target_arch = "wasm32"))]
     {
         static LANGUAGE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-        LANGUAGE.get_or_init(|| supported(sys_locale::get_locale().as_deref()))
+        // TM AutoClip yerel yamasi (4 Kas 2026): TM AutoClip'ten acilinca "Match System" onun arayuz dili (TMAC_DIL; "tr", "en"...);
+        // EffectCraft'ta o dil yoksa Ingilizce (supported). Elle secilen dil korunur; degisken yoksa upstream davranisi.
+        LANGUAGE.get_or_init(|| supported(tm_dil().or_else(sys_locale::get_locale).as_deref()))
     }
     #[cfg(target_arch = "wasm32")]
     {
         let (requested, browser) = SYSTEM_LOCALES.get().map(|(r, b)| (r.as_deref(), b.as_slice())).unwrap_or_default();
         first_supported(requested, browser, web_draws)
     }
+}
+
+/// TM AutoClip yerel yaması: TM AutoClip'in verdiği arayüz dili (`TMAC_DIL`), boş ya da biçimsizse yok.
+#[cfg(not(target_arch = "wasm32"))]
+fn tm_dil() -> Option<String> {
+    std::env::var("TMAC_DIL")
+        .ok()
+        .map(|dil| dil.trim().to_owned())
+        .filter(|dil| !dil.is_empty() && dil.len() <= 32 && dil.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
 }
 
 /// The page's `?lang=`, then the browser's preferred languages, most preferred first
