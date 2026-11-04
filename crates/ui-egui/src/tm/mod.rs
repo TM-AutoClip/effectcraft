@@ -7,6 +7,8 @@
 //!   altyazı), render arka planda yapılır; bitince `teslim.json` yazılır ve program kapanır.
 //! - Kullanıcı Render Kuyruğu panelinden kendisi render ederse de: o öğe bitince proje kaydedilir ve teslim yazılır (program açık
 //!   kalır; kapatınca TM AutoClip çıktıyı alır).
+//! - "Render et ve gönder" yalnız bizim öğeyi render etsin diye kuyruktaki diğer işaretli öğelerin işaretini geçici kaldırır; render bitince
+//!   (başarılı, hatalı ya da durdurulmuş) o öğelerin işareti geri konur (5 Kas 2026, geliştirici: "diğer öğelerin işaretleri geri gelsin").
 //! - Düz kipte (oturumsuz ya da `kip = duz`) hiçbir şey görünmez, hiçbir şey yazılmaz.
 
 pub mod oturum;
@@ -41,13 +43,15 @@ struct Hal {
     teslim_edilen: Option<u64>,
     /// Programın açıldığı an (Unix sn.): projede önceki bir oturumdan kalan "bitti" öğesi teslim edilmez.
     acilis: i64,
+    /// "Render et ve gönder"in işaretini geçici kaldırdığı diğer öğeler (render bitince işaretleri geri konur).
+    geri_isaret: Vec<u64>,
 }
 
 static HAL: Mutex<Option<Hal>> = Mutex::new(None);
 
 fn hal<R>(f: impl FnOnce(&mut Hal) -> R) -> R {
     let mut kilit = HAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let h = kilit.get_or_insert_with(|| Hal { durum: Durum::Bos, teslim_edilen: None, acilis: oturum::simdi_unix() });
+    let h = kilit.get_or_insert_with(|| Hal { durum: Durum::Bos, teslim_edilen: None, acilis: oturum::simdi_unix(), geri_isaret: Vec::new() });
     f(h)
 }
 
@@ -104,15 +108,23 @@ fn baslat(app: &mut EffectcraftApp) -> Result<Value, String> {
     }
     let i = hedef_oge(app, &beklenen).ok_or("TM AutoClip render kuyruğu öğesi kurulamadı")?;
     let hedef_id = app.session.project.render_queue[i].id;
-    // Yalnız bizim öğe render edilir (kuyruktaki diğer işaretli öğeler bu render'da beklesin).
+    // Yalnız bizim öğe render edilir (kuyruktaki diğer işaretli öğeler bu render'da beklesin; render bitince işaretleri geri konur).
     let digerleri: Vec<u64> = app.session.project.render_queue.iter().filter(|it| it.id != hedef_id && it.render).map(|it| it.id).collect();
-    for id in digerleri {
-        calistir(app, "renderQueue.setRender", json!({"item": id, "render": false}))?;
+    hal(|h| h.geri_isaret.clone_from(&digerleri));
+    let basladi = (|| {
+        for id in &digerleri {
+            calistir(app, "renderQueue.setRender", json!({"item": id, "render": false}))?;
+        }
+        calistir(app, "renderQueue.setRender", json!({"item": hedef_id, "render": true}))?;
+        // TM AutoClip kesimleri, işaretleri ve altyazıyı kaydedilen projeden okur: render'dan önce kaydet.
+        calistir(app, "file.save", json!({}))?;
+        calistir(app, "renderQueue.render", json!({"wait": false}))
+    })();
+    if let Err(e) = basladi {
+        // Render başlamadı: kaldırılan işaretler hemen geri konur.
+        geri_isaretle(app);
+        return Err(e);
     }
-    calistir(app, "renderQueue.setRender", json!({"item": hedef_id, "render": true}))?;
-    // TM AutoClip kesimleri, işaretleri ve altyazıyı kaydedilen projeden okur: render'dan önce kaydet.
-    calistir(app, "file.save", json!({}))?;
-    calistir(app, "renderQueue.render", json!({"wait": false}))?;
     log::info!("TM AutoClip: render başladı ({})", beklenen.display());
     hal(|h| h.durum = Durum::Render);
     app.ui.status = "TM AutoClip için render ediliyor…".into();
@@ -167,11 +179,14 @@ pub fn kare(app: &mut EffectcraftApp, ctx: &egui::Context) {
             let yeni = hal(|h| baslangic.is_some_and(|b| b as i64 >= h.acilis - 1) && h.teslim_edilen != baslangic);
             let Some(cikti) = cikti.filter(|_| yeni).map(PathBuf::from).filter(|p| p.is_file()) else {
                 if gonderiyor {
+                    geri_isaretle(app);
                     hal(|h| h.durum = Durum::Bos);
                     app.ui.status = "TM AutoClip'e gönderilemedi: render çıktısı bulunamadı".into();
                 }
                 return;
             };
+            // Diğer öğelerin işaretleri geri (kaydedilen proje kullanıcının kuyruğunu eksiksiz taşısın).
+            geri_isaretle(app);
             // Render'ın kuyruk durumu projeyi değiştirdi: TM AutoClip son hâli okusun diye yeniden kaydet.
             if let Err(e) = app.session.execute("file.save", json!({})) {
                 log::warn!("TM AutoClip: proje teslimden önce kaydedilemedi: {e}");
@@ -186,11 +201,13 @@ pub fn kare(app: &mut EffectcraftApp, ctx: &egui::Context) {
         }
         RenderStatus::Failed(e) if gonderiyor => {
             let e = e.clone();
+            geri_isaretle(app);
             hal(|h| h.durum = Durum::Bos);
             log::error!("TM AutoClip: render başarısız: {e}");
             app.ui.status = format!("TM AutoClip'e gönderilemedi: render başarısız ({e})");
         }
         RenderStatus::UserStopped if gonderiyor => {
+            geri_isaretle(app);
             hal(|h| h.durum = Durum::Bos);
             app.ui.status = "TM AutoClip'e gönderme durduruldu".into();
         }
@@ -198,9 +215,37 @@ pub fn kare(app: &mut EffectcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// "Render et ve gönder"in işaretini kaldırdığı öğelerin işaretini geri koyar (kuyrukta hâlâ duran ve işareti kapalı olanlar). Konamayan
+/// öğe günlüğe yazılır, diğerleri yine geri konur.
+fn geri_isaretle(app: &mut EffectcraftApp) {
+    let saklanan = hal(|h| std::mem::take(&mut h.geri_isaret));
+    if saklanan.is_empty() {
+        return;
+    }
+    let kuyruk: Vec<(u64, bool)> = app.session.project.render_queue.iter().map(|it| (it.id, it.render)).collect();
+    for id in geri_isaretlenecekler(&kuyruk, &saklanan) {
+        if let Err(e) = app.session.execute("renderQueue.setRender", json!({"item": id, "render": true})) {
+            log::warn!("TM AutoClip: render kuyruğu öğesinin işareti geri konamadı ({id}): {e}");
+        }
+    }
+}
+
+/// Geri işaretlenecek öğeler: saklananlardan kuyrukta hâlâ duran ve işareti kapalı olanlar (silinen ya da kullanıcının yeniden işaretlediği atlanır).
+fn geri_isaretlenecekler(kuyruk: &[(u64, bool)], saklanan: &[u64]) -> Vec<u64> {
+    saklanan.iter().copied().filter(|id| kuyruk.iter().any(|(k, isaretli)| k == id && !isaretli)).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ayni_cikti;
+    use super::{ayni_cikti, geri_isaretlenecekler};
+
+    #[test]
+    fn yalniz_kuyrukta_duran_ve_isaretsiz_ogeler_geri_isaretlenir() {
+        let kuyruk = [(1, false), (2, true), (3, false), (9, true)];
+        assert_eq!(geri_isaretlenecekler(&kuyruk, &[1, 2, 4]), vec![1], "2 zaten işaretli, 4 silinmiş");
+        assert_eq!(geri_isaretlenecekler(&kuyruk, &[]), Vec::<u64>::new());
+        assert_eq!(geri_isaretlenecekler(&kuyruk, &[3, 1]), vec![3, 1], "sıra korunur");
+    }
     use std::path::Path;
 
     #[test]
