@@ -192,6 +192,10 @@ pub fn waits_on_dialog(result: &Value) -> bool {
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     crate::control::check_script_render(app, id)?;
+    // TM AutoClip yerel yaması: bizim komut ("Render et ve TM AutoClip'e gönder").
+    if let Some(r) = crate::tm::calistir(app, id) {
+        return r;
+    }
     if matches!(id, "effects.copyPresetsFolderPath" | "mediaBrowser.copySourcePath") {
         return frontend(app, ctx, id, params);
     }

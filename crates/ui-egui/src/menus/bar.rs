@@ -90,6 +90,10 @@ pub fn menu_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                         ui.set_min_width(if label == "Effect" { 200.0 } else { 280.0 });
                         let browsing = nav.browsing();
                         crate::widgets::menu_scroll(ui, browsing, |ui| menu_nodes(app, ui, children, &mut clicked, &mut nav, 0));
+                        // TM AutoClip yerel yaması: akış kipinde Dosya menüsünün sonunda "Render et ve TM AutoClip'e gönder".
+                        if label == "File" {
+                            crate::tm::dosya_menusu(ui, &mut clicked);
+                        }
                     });
                 nav.top(&response);
                 // The titles and the open menus: a press inside them is not an outside press.
