@@ -157,6 +157,8 @@ impl EffectcraftApp {
             self.session.poll_render();
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // TM AutoClip yerel yaması: bizim render bitince teslim (akış kipinde).
+        crate::tm::kare(self, ctx);
         if self.session.track_job.is_some() {
             self.session.poll_track();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));

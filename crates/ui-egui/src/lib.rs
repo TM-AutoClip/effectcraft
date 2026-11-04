@@ -40,6 +40,8 @@ mod pointer_wrap;
 pub mod prefs_live;
 pub mod state;
 pub mod theme;
+/// TM AutoClip yerel yaması (oturum, "Render et ve TM AutoClip'e gönder").
+pub mod tm;
 pub mod updates_ui;
 pub mod widgets;
 mod workspace_state;

@@ -184,6 +184,10 @@ fn only_comp(p: &Value) -> Option<effectcraft_engine::project::ItemId> {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    // TM AutoClip yerel yaması: bizim komut ("Render et ve TM AutoClip'e gönder").
+    if let Some(r) = crate::tm::calistir(app, id) {
+        return r;
+    }
     if matches!(id, "effects.copyPresetsFolderPath" | "mediaBrowser.copySourcePath") {
         return frontend(app, ctx, id, params);
     }
