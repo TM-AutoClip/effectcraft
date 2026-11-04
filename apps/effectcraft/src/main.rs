@@ -20,6 +20,7 @@ mod appimage;
 mod apple_events;
 mod audio_out;
 mod control_server;
+mod tm;
 mod tm_kanal;
 mod launch_guard;
 #[cfg(target_os = "macos")]
@@ -176,6 +177,8 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
     };
+    // TM AutoClip yerel yaması: verilen oturum geçersizse ileti + çıkış 3 (oturum yoksa serbest açılış).
+    tm::kapi();
     // The session log lives in the settings folder (`Logs/effectcraft.log`, the previous two runs
     // kept): a launch from the Dock or a menu has no terminal. Opened after the arguments, so
     // `--version` leaves no file behind; records logged until now are written to it first.
